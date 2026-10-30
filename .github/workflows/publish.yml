@@ -1,0 +1,23 @@
+# Publishes to npm when a v* tag is pushed. Uses npm trusted publishing: the package's settings on
+# npmjs.com name this repository and this workflow file, and the job proves its identity with an
+# OIDC token, so no npm token is stored in GitHub.
+name: publish
+on:
+  push:
+    tags: ['v*']
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm test
+      - run: npm publish --provenance

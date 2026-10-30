@@ -1,0 +1,7 @@
+# Interface strings of the body engine for tr, laid over the book's.
+hint: Modeli döndürmek için sürükleyin, yakınlaşmak için kaydırın, sonra adım adım ilerleyin.
+tab_map: Model
+map_data: Model verisi
+map_view: Görünüm
+layout_center: Model ortada
+view_reset: Görünümü sıfırla

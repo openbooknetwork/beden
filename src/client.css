@@ -1,0 +1,3 @@
+.beden-label{font:13px/1.2 system-ui,sans-serif;background:rgba(20,20,20,.75);color:#fff;padding:3px 7px;border-radius:3px;white-space:nowrap;pointer-events:none}
+.beden-tip{position:absolute;display:none;font:12px system-ui,sans-serif;background:rgba(20,20,20,.85);color:#fff;padding:3px 7px;border-radius:3px;pointer-events:none;z-index:2}
+.bc pre.code{font:.8rem/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;background:var(--paper-2);padding:.5rem;border-radius:4px;margin:.5rem 0 0}

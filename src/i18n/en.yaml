@@ -1,0 +1,7 @@
+# Interface strings of the body engine, laid over the book's.
+hint: Drag to turn the model, scroll to zoom, then step through.
+tab_map: Model
+map_data: Model data
+map_view: View
+layout_center: Model in the middle
+view_reset: Reset view
