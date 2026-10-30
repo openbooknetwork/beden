@@ -1,3 +1,10 @@
-.beden-label{font:13px/1.2 system-ui,sans-serif;background:rgba(20,20,20,.75);color:#fff;padding:3px 7px;border-radius:3px;white-space:nowrap;pointer-events:none}
+.beden-callouts{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:1}
+.beden-callouts svg{position:absolute;inset:0;width:100%;height:100%}
+.beden-callouts line{stroke:var(--ink,#222);stroke-width:1;opacity:.7}
+.beden-callouts circle{fill:var(--ink,#222);stroke:var(--paper,#fff);stroke-width:1.5}
+.beden-callouts line.on{stroke:var(--accent,#c0392b);stroke-width:2;opacity:1}
+.beden-callouts circle.on{fill:var(--accent,#c0392b);r:4.5px}
+.beden-label{position:absolute;left:0;top:0;font:13px/1.2 system-ui,sans-serif;background:rgba(20,20,20,.75);color:#fff;padding:3px 7px;border-radius:3px;white-space:nowrap;pointer-events:auto;cursor:default}
+.beden-label.on{background:var(--accent,#c0392b)}
 .beden-tip{position:absolute;display:none;font:12px system-ui,sans-serif;background:rgba(20,20,20,.85);color:#fff;padding:3px 7px;border-radius:3px;pointer-events:none;z-index:2}
 .bc pre.code{font:.8rem/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;background:var(--paper-2);padding:.5rem;border-radius:4px;margin:.5rem 0 0}

@@ -3,7 +3,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 const SECTIONS = { sagittal: [1, 0, 0], coronal: [0, 0, 1], axial: [0, 1, 0] };
@@ -38,6 +37,59 @@ export function view(page, { model, cameras, color, bounds, fov }) {
   };
 }
 
+// The camera between two pages at e from 0 to 1: the target moves straight, the camera swings round it on an arc
+// and its distance eases geometrically, so a turn from front to back passes round the body. Two nearly opposite
+// directions turn through the side, by way of the horizontal direction square to the first. Returns [position, target].
+export function swing(from, to, t0, t1, e) {
+  const target = t0.map((v, k) => v + (t1[k] - v) * e), off = (p, t) => p.map((v, k) => v - t[k]);
+  const a = off(from, t0), b = off(to, t1), da = Math.hypot(...a) || 1e-9, db = Math.hypot(...b) || 1e-9;
+  const na = a.map(v => v / da), nb = b.map(v => v / db), dot = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+  const slerp = (p, q, s) => {
+    const w = Math.acos(Math.max(-1, Math.min(1, dot(p, q))));
+    if (w < 1e-4) return p.map((v, k) => v + (q[k] - v) * s);
+    return p.map((v, k) => (Math.sin((1 - s) * w) * v + Math.sin(s * w) * q[k]) / Math.sin(w));
+  };
+  let n;
+  if (dot(na, nb) > -0.8) n = slerp(na, nb, e);
+  else {
+    const side = [na[2], 0, -na[0]], l = Math.hypot(...side), s = l > 1e-6 ? side.map(v => v / l) : [1, 0, 0];
+    n = e < 0.5 ? slerp(na, s, e * 2) : slerp(s, nb, e * 2 - 1);
+  }
+  const d = da ** (1 - e) * db ** e;
+  return [target.map((v, k) => v + n[k] * d), target];
+}
+
+// Places labels as callouts, so they leave the parts they name in sight: each label goes to a column beside the
+// anchors, left or right of their middle, the two columns kept within one label of each other, stacked in the order
+// of their anchors' heights and pushed apart, and a line runs from its inner edge to its anchor. anchors are screen
+// points { x, y, visible }, sizes { w, h } in pixels, avoid the screen rectangle { left, right } of the lit parts,
+// which the columns stand clear of. Returns per anchor { x, y, from, to } (label box and line) or null.
+export function callouts(anchors, sizes, { width, height, avoid = null, gap = 48, margin = 8, spacing = 4 }) {
+  const shown = anchors.map((a, i) => ({ ...a, i })).filter(a => a.visible), out = anchors.map(() => null);
+  if (!shown.length) return out;
+  const mid = shown.reduce((s, a) => s + a.x, 0) / shown.length;
+  const left = shown.filter(a => a.x < mid), right = shown.filter(a => a.x >= mid);
+  while (Math.abs(left.length - right.length) > 1) {
+    const [from, to, inner] = left.length > right.length ? [left, right, (a, b) => b.x - a.x] : [right, left, (a, b) => a.x - b.x];
+    from.sort(inner); to.push(from.shift());
+  }
+  for (const [col, isLeft] of [[left, true], [right, false]]) {
+    if (!col.length) continue;
+    col.sort((a, b) => a.y - b.y);
+    const h = col.map(a => sizes[a.i].h), top = col.map((a, k) => a.y - h[k] / 2);
+    for (let k = 1; k < col.length; k++) top[k] = Math.max(top[k], top[k - 1] + h[k - 1] + spacing);
+    const over = top.at(-1) + h.at(-1) - (height - margin);
+    if (over > 0) { top[top.length - 1] -= over; for (let k = top.length - 2; k >= 0; k--) top[k] = Math.min(top[k], top[k + 1] - h[k] - spacing); }
+    if (top[0] < margin) { const push = margin - top[0]; for (let k = 0; k < top.length; k++) top[k] += push; }
+    const edge = isLeft ? Math.min(...col.map(a => a.x), avoid?.left ?? Infinity) - gap : Math.max(...col.map(a => a.x), avoid?.right ?? -Infinity) + gap;
+    col.forEach((a, k) => {
+      const w = sizes[a.i].w, x = isLeft ? Math.max(margin, edge - w) : Math.min(width - margin - w, edge), y = top[k];
+      out[a.i] = { x, y, from: [isLeft ? x + w : x, y + h[k] / 2], to: [a.x, a.y] };
+    });
+  }
+  return out;
+}
+
 // Writes a view onto the meshes, every field of every part, so nothing of the page before remains. A mesh the view
 // does not name is hidden.
 export function paint(v, meshes) {
@@ -64,9 +116,10 @@ function beden(host) {
   renderer.localClippingEnabled = true;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   el.appendChild(renderer.domElement);
-  const labels = new CSS2DRenderer();
-  Object.assign(labels.domElement.style, { position: 'absolute', inset: '0', pointerEvents: 'none' });
-  el.appendChild(labels.domElement);
+  // the callouts: label boxes over an svg of their leader lines and anchor dots
+  const layer = document.createElement('div'); layer.className = 'beden-callouts';
+  layer.innerHTML = '<svg aria-hidden="true"></svg>'; el.appendChild(layer);
+  const svg = layer.firstChild, SVG = 'http://www.w3.org/2000/svg';
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.zoomToCursor = true; // the wheel zooms on the part under the pointer, not on the orbit centre
@@ -77,7 +130,7 @@ function beden(host) {
   const parts = new Map(), families = bundle.families ?? {}, cameras = bundle.cameras ?? {};
   const color = f => (dark() ? families[f]?.color_dark : families[f]?.color) ?? families[f]?.color ?? '#999999';
   // current is the page's spec, shown its view; pointed holds the parts a text link points at, glowing over the view
-  let current = null, shown = null, flowT = 0, labelObjs = [], tween = null, pointed = new Set(), touched = new Set();
+  let current = null, shown = null, flowT = 0, notes = [], focus = [], tween = null, pointed = new Set(), touched = new Set();
 
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
@@ -110,6 +163,42 @@ function beden(host) {
   }
 
   const expand = ids => (ids ?? []).flatMap(id => model?.groups?.[id] ?? [id]);
+  const point = (id, on) => { for (const p of expand([id])) on ? pointed.add(p) : pointed.delete(p); };
+  // a label's point on the model: a part's own anchor, or for a group the anchor of its member nearest the group's middle
+  const anchorOf = id => {
+    if (parts.has(id)) return parts.get(id).userData.anchor;
+    const members = expand([id]).filter(p => parts.has(p)), box = bounds(members); if (!box) return null;
+    const c = new THREE.Vector3(...box.center);
+    return members.map(p => parts.get(p).userData.anchor).sort((a, b) => a.distanceTo(c) - b.distanceTo(c))[0];
+  };
+  // Lays the callouts out for the camera of this frame: each anchor projected onto the screen, the labels placed
+  // beside them by callouts(), the lines drawn from label to anchor.
+  const v3 = new THREE.Vector3();
+  function placeNotes() {
+    if (!notes.length) return;
+    const width = el.clientWidth, height = el.clientHeight;
+    if (!width) return; // the stage is hidden, as on a phone's text tab
+    for (const n of notes) if (!n.size.w) n.size = { w: n.div.offsetWidth, h: n.div.offsetHeight }; // measured once shown
+    const anchors = notes.map(n => {
+      v3.copy(n.anchor).project(camera);
+      return { x: (v3.x + 1) / 2 * width, y: (1 - v3.y) / 2 * height, visible: v3.z > -1 && v3.z < 1 && Math.abs(v3.x) <= 1.05 && Math.abs(v3.y) <= 1.05 };
+    });
+    // the screen rectangle of the lit and labelled parts, from the corners of their boxes, which labels stand clear of
+    let left = Infinity, right = -Infinity;
+    for (const box of focus) for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+      v3.set(x, y, z).project(camera); if (v3.z < -1 || v3.z > 1) continue;
+      const sx = (v3.x + 1) / 2 * width; left = Math.min(left, sx); right = Math.max(right, sx);
+    }
+    const avoid = left < right ? { left, right } : null;
+    callouts(anchors, notes.map(n => n.size), { width, height, avoid }).forEach((c, i) => {
+      const n = notes[i], on = !!c;
+      n.div.hidden = !on; n.line.style.display = n.dot.style.display = on ? '' : 'none';
+      if (!on) return;
+      n.div.style.transform = `translate(${c.x}px, ${c.y}px)`;
+      n.line.setAttribute('x1', c.from[0]); n.line.setAttribute('y1', c.from[1]); n.line.setAttribute('x2', c.to[0]); n.line.setAttribute('y2', c.to[1]);
+      n.dot.setAttribute('cx', c.to[0]); n.dot.setAttribute('cy', c.to[1]);
+    });
+  }
   const bounds = ids => {
     const b = new THREE.Box3(); for (const id of ids) if (parts.has(id)) b.union(parts.get(id).userData.box);
     return b.isEmpty() ? null : { center: b.getCenter(new THREE.Vector3()).toArray(), size: b.getSize(new THREE.Vector3()).length() };
@@ -121,21 +210,33 @@ function beden(host) {
     if (!current || !model || !parts.size) return;
     shown = view(current, { model, cameras, color, bounds, fov: camera.fov });
     paint(shown, parts); touched = new Set();
-    for (const l of labelObjs) l.removeFromParent();
-    labelObjs = shown.labels.map(l => {
-      const p = parts.get(l.part); if (!p) return null;
-      const div = document.createElement('div'); div.className = 'beden-label'; div.textContent = host.L(l.text);
-      const o = new CSS2DObject(div); o.position.copy(p.userData.anchor); scene.add(o); return o;
+    for (const n of notes) { n.div.remove(); n.line.remove(); n.dot.remove(); }
+    notes = shown.labels.map(l => {
+      const anchor = anchorOf(l.part); if (!anchor) return null;
+      const div = document.createElement('div'); div.className = 'beden-label'; div.textContent = host.L(l.text); layer.appendChild(div);
+      // pointing at a label lights its part, as pointing at the part's link in the text does
+      div.addEventListener('pointerenter', () => point(l.part, true)); div.addEventListener('pointerleave', () => point(l.part, false));
+      const line = svg.appendChild(document.createElementNS(SVG, 'line')), dot = svg.appendChild(document.createElementNS(SVG, 'circle'));
+      dot.setAttribute('r', '3');
+      return { anchor, div, line, dot, ids: expand([l.part]), size: { w: div.offsetWidth, h: div.offsetHeight } };
     }).filter(Boolean);
+    // the boxes labels keep clear of: every lit part and every labelled part that shows
+    const lit = Object.entries(shown.parts).filter(([, p]) => p.visible && p.glow > 0).map(([id]) => id);
+    focus = [...new Set([...lit, ...expand(shown.labels.map(l => l.part))])].filter(id => parts.has(id) && shown.parts[id]?.visible).map(id => parts.get(id).userData.box);
     const target = new THREE.Vector3(...shown.camera.target), position = new THREE.Vector3(...shown.camera.position);
     if (move === 'jump') { camera.position.copy(position); controls.target.copy(target); tween = null; }
-    else if (move === 'tween') tween = { from: camera.position.clone(), to: position, t0: controls.target.clone(), t1: target, t: 0 };
+    else if (move === 'tween') tween = { from: camera.position.toArray(), to: position.toArray(), t0: controls.target.toArray(), t1: target.toArray(), t: 0 };
   }
 
   // The glow over the view, worked out again each frame: the flow runs a pulse of light along its parts in order, so
   // blood reads as moving through them, and a pointed part shines white. A part the glow left goes back to its view.
   function animate(dt) {
-    if (tween) { tween.t = Math.min(1, tween.t + dt / 1.2); const e = 1 - Math.pow(1 - tween.t, 3); camera.position.lerpVectors(tween.from, tween.to, e); controls.target.lerpVectors(tween.t0, tween.t1, e); if (tween.t >= 1) tween = null; }
+    if (tween) {
+      tween.t = Math.min(1, tween.t + dt / 1.2);
+      const [p, t] = swing(tween.from, tween.to, tween.t0, tween.t1, 1 - Math.pow(1 - tween.t, 3));
+      camera.position.set(...p); controls.target.set(...t);
+      if (tween.t >= 1) tween = null;
+    }
     if (!shown) return;
     const glow = new Map();
     if (shown.flow.length) {
@@ -153,16 +254,18 @@ function beden(host) {
       o.material.opacity = 1; o.material.depthWrite = true;
     }
     touched = new Set(glow.keys());
+    // a callout lights with its part, whether the label, the text or the shell pointed at it
+    for (const n of notes) { const on = n.ids.some(id => pointed.has(id)); n.div.classList.toggle('on', on); n.line.classList.toggle('on', on); n.dot.classList.toggle('on', on); }
   }
 
   function resize() {
     const w = el.clientWidth, h = el.clientHeight;
-    renderer.setSize(w, h); labels.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+    renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
   }
   new ResizeObserver(resize).observe(el);
   resize();
   const clock = new THREE.Timer();
-  renderer.setAnimationLoop(() => { clock.update(); animate(clock.getDelta()); controls.update(); renderer.render(scene, camera); labels.render(scene, camera); });
+  renderer.setAnimationLoop(() => { clock.update(); animate(clock.getDelta()); controls.update(); renderer.render(scene, camera); placeNotes(); });
 
   // Hover names the part under the pointer, from the bundle's names in the page language.
   const ray = new THREE.Raycaster(), tip = document.createElement('div'); tip.className = 'beden-tip'; el.appendChild(tip);
@@ -179,7 +282,7 @@ function beden(host) {
   return {
     // a new page starts from its own view: the pointed parts and the flow's phase belong to the page before
     show(page, first) { current = specOf(page); pointed = new Set(); flowT = 0; load(current.model ?? bundle.default); render({ camera: first ? 'jump' : 'tween' }); tools.card(page); },
-    point(id, on) { for (const p of expand([id])) on ? pointed.add(p) : pointed.delete(p); },
+    point,
     highlight(kind, id) { pointed = new Set(expand([id])); },
     resize,
     theme() { render({ camera: 'stay' }); },

@@ -76,3 +76,6 @@ A page shows what its own fields say. In `src/client.js`, `view(page, ...)` work
 from the page alone, with a value for every field a page leaves out, and `paint(view, meshes)` writes all of it onto
 every part. The flow pulse and the glow of a part a text link points at are worked out again each frame on top of the
 view. `test/view.test.mjs` paints every pair of its pages in both orders and fails when one page shows in the next.
+
+`labels` show as callouts: a dot on the part, the label in a column beside the lit parts, and a line between them, so
+small parts stay in sight. `callouts()` places them anew every frame as the camera moves.
