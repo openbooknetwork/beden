@@ -105,11 +105,52 @@ export function fitSkeleton(za, { index, objDirs, log = () => {} }) {
   return { T, report };
 }
 
+// The leg bones on each side, top to bottom: Z-Anatomy mesh -> BodyParts3D concept. Z-Anatomy's lower leg is some
+// 5 cm shorter than BodyParts3D's, so the skeleton fit leaves its knees, ankles and feet that much too high.
+const LEGS = {
+  right: [['Femurr', 'FMA24474'], ['Patellar', 'FMA24486'], ['Tibiar', 'FMA24477'], ['Talusr', 'FMA24482'], ['Calcaneusr', 'FMA24497']],
+  left: [['Femurl', 'FMA24475'], ['Patellal', 'FMA24487'], ['Tibial', 'FMA24478'], ['Talusl', 'FMA24483'], ['Calcaneusl', 'FMA24498']],
+};
+
+// Per side, the shift that carries each leg bone's centre onto BodyParts3D's after the skeleton fit, at the bone's
+// height, below a top point at the femur head that does not move. Returns { right, left } of [{ y, d }], top first.
+export function fitLegs(za, T, { index, objDirs }) {
+  const mean = P => [0, 1, 2].map(k => P.reduce((s, p) => s + p[k], 0) / P.length), legs = {};
+  for (const [side, bones] of Object.entries(LEGS)) {
+    const marks = [];
+    for (const [name, concept] of bones) {
+      if (!za.has(name)) continue;
+      const { pos } = za.get(name), Z = [];
+      for (let i = 0; i < pos.length; i += 3) Z.push(apply(T, [pos[i], pos[i + 1], pos[i + 2]]));
+      const B = conceptPoints(index, objDirs, concept), Bp = []; for (let i = 0; i < B.length; i += 3) Bp.push([B[i], B[i + 1], B[i + 2]]);
+      if (!Bp.length) continue;
+      const a = mean(Z), b = mean(Bp);
+      if (name.startsWith('Femur')) marks.push({ y: Math.max(...Z.map(p => p[1])), d: [0, 0, 0] });
+      marks.push({ y: a[1], d: b.map((v, k) => v - a[k]) });
+    }
+    legs[side] = marks.sort((p, q) => q.y - p.y);
+  }
+  return legs;
+}
+
+// The leg correction as a function of a point in beden's frame: points at or above the femur head stay, points
+// below move by the shift interpolated between the marks above and below them on their own side (x < 0 is the right).
+export function legWarp(legs) {
+  return p => {
+    const marks = legs?.[p[0] < 0 ? 'right' : 'left'];
+    if (!marks?.length || p[1] >= marks[0].y) return p;
+    let i = 0; while (i + 1 < marks.length && marks[i + 1].y > p[1]) i++;
+    const lo = marks[Math.min(i + 1, marks.length - 1)], hi = marks[i], t = lo === hi ? 1 : (hi.y - p[1]) / (hi.y - lo.y);
+    return p.map((v, k) => v + hi.d[k] + (lo.d[k] - hi.d[k]) * Math.min(1, t));
+  };
+}
+
 // An element id from a Z-Anatomy mesh name: Anterior_axillary_nodesr -> za-anterior-axillary-nodesr
 export const elementId = name => 'za-' + name.toLowerCase().replace(/[()]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-// Writes each mesh as <out>/<element id>.obj in BodyParts3D's frame: millimetres, z up, facing -y.
-export function writeElements(meshes, T, out) {
+// Writes each mesh as <out>/<element id>.obj in BodyParts3D's frame: millimetres, z up, facing -y. warp corrects the
+// legs after the skeleton fit.
+export function writeElements(meshes, T, out, warp = p => p) {
   fs.mkdirSync(out, { recursive: true });
   const written = [];
   for (const [name, { pos, idx }] of meshes) {
@@ -117,7 +158,7 @@ export function writeElements(meshes, T, out) {
     if (idx.length < 3 || (/j$/.test(name) && pos.length / 3 < 100)) continue;
     const lines = [`# ${name} from Z-Anatomy, CC BY-SA 4.0, moved into BodyParts3D's frame by beden z-anatomy`];
     for (let i = 0; i < pos.length; i += 3) {
-      const [x, y, z] = apply(T, [pos[i], pos[i + 1], pos[i + 2]]);
+      const [x, y, z] = warp(apply(T, [pos[i], pos[i + 1], pos[i + 2]]));
       lines.push(`v ${(x * 1000).toFixed(3)} ${(-z * 1000).toFixed(3)} ${(y * 1000).toFixed(3)}`);
     }
     for (let i = 0; i + 2 < idx.length; i += 3) lines.push(`f ${idx[i] + 1} ${idx[i + 1] + 1} ${idx[i + 2] + 1}`);
@@ -130,10 +171,12 @@ export function writeElements(meshes, T, out) {
 
 // beden z-anatomy: the meshes of one Z-Anatomy FBX as element files, placed by the fit of its skeleton FBX.
 export async function importZAnatomy({ fbx, skeleton, objDirs, listsDir, out, log = console.log }) {
-  const index = readIndex(listsDir), { T, report } = fitSkeleton(await readFbx(skeleton), { index, objDirs, log });
+  const bones = await readFbx(skeleton), index = readIndex(listsDir), { T, report } = fitSkeleton(bones, { index, objDirs, log });
   for (const r of report) log(`${r.bone.padEnd(22)} ${(r.median * 1000).toFixed(1)} mm`);
-  const written = writeElements(await readFbx(fbx), T, out);
-  fs.writeFileSync(path.join(out, 'transform.json'), JSON.stringify({ from: path.basename(fbx), skeleton: path.basename(skeleton), ...T }, null, 1) + '\n');
+  const legs = fitLegs(bones, T, { index, objDirs });
+  for (const [side, marks] of Object.entries(legs)) log(`${side} leg shifts, mm: ${marks.map(m => m.d.map(v => (v * 1000).toFixed(0)).join('/')).join(', ')}`);
+  const written = writeElements(await readFbx(fbx), T, out, legWarp(legs));
+  fs.writeFileSync(path.join(out, 'transform.json'), JSON.stringify({ from: path.basename(fbx), skeleton: path.basename(skeleton), ...T, legs }, null, 1) + '\n');
   log(`wrote ${written.length} element files into ${out}`);
   return { T, report, written };
 }

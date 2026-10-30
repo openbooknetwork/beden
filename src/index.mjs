@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { schema } from '@openbooknetwork/kitap';
+import { PALETTE } from './palette.mjs';
 
 const { z, Id, Translatable, Hex, check } = schema;
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -101,9 +102,16 @@ function readPage(bp, { at, own, scope: s }, ctx) {
   };
 }
 
+// a story's colours: beden's palette of organ colours with the story's own families laid over it
+const familiesOf = S => ({ ...PALETTE, ...S.families });
+
 function finish({ pages }, ctx) {
-  const E = ctx.state;
-  for (const m of Object.values(E.models)) if (!m.exists) ctx.warn(`${ctx.rel(m.file)} is not built, run: beden model ${ctx.rel(m.dir)}`);
+  const E = ctx.state, families = familiesOf(E.story);
+  for (const m of Object.values(E.models)) {
+    if (!m.exists) ctx.warn(`${ctx.rel(m.file)} is not built, run: beden model ${ctx.rel(m.dir)}`);
+    for (const [id, p] of Object.entries(m.parts)) if (p.family && p.export !== false && !families[p.family])
+      ctx.warn(`${ctx.rel(m.dir)}/model.yaml: part ${id} names family "${p.family}", which neither beden's palette nor story.yaml holds, so it shows grey`);
+  }
   const images = pages.flatMap(pg => pg.beden.open ? E.structures[pg.beden.open]?.images ?? [] : []);
   return { images, folders: E.folders };
 }
@@ -113,7 +121,8 @@ function bundle(content, ctx) {
   const E = content.state, S = E.story, models = {};
   for (const m of Object.values(E.models)) models[m.id] = { file: ctx.objectLink(modelKey(content.story.id, m)), parts: m.parts, groups: m.groups, names: m.names, layers: Object.fromEntries(Object.values(m.parts).map(p => [p.layer, 1])) };
   const cards = Object.fromEntries(Object.values(E.structures).map(c => [c.id, c]));
-  return { data: { models, default: S.model, cameras: S.cameras, families: S.families, cards, overview: S.overview ?? null }, families: S.families, credits: [...new Set(Object.values(E.models).map(m => m.credit).filter(Boolean))] };
+  const families = familiesOf(S);
+  return { data: { models, default: S.model, cameras: S.cameras, families, cards, overview: S.overview ?? null }, families, credits: [...new Set(Object.values(E.models).map(m => m.credit).filter(Boolean))] };
 }
 const modelKey = (story, m) => `models/${story}/${m.id}-${(m.sha256 ?? 'unbuilt').slice(0, 12)}${path.extname(m.file)}`;
 
