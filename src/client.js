@@ -112,7 +112,7 @@ function beden(host) {
   const dark = () => host.css('color-scheme') === 'dark';
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 50);
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, stencil: true }); // the stencil draws the cut faces
   renderer.localClippingEnabled = true;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   el.appendChild(renderer.domElement);
@@ -171,6 +171,18 @@ function beden(host) {
     const c = new THREE.Vector3(...box.center);
     return members.map(p => parts.get(p).userData.anchor).sort((a, b) => a.distanceTo(c) - b.distanceTo(c))[0];
   };
+  // on a cut page, a label's point on the part's cut face: of its vertices within 3 mm of the plane, the one nearest the
+  // part's usual anchor, laid onto the plane. The dot then sits on what shows, and on one side of a paired part.
+  const cutAnchorOf = (id, plane) => {
+    const near = [], v = new THREE.Vector3();
+    for (const p of expand([id])) {
+      const o = parts.get(p), P = o?.geometry.attributes.position; if (!P || !o.userData.box.intersectsPlane(plane)) continue;
+      for (let i = 0; i < P.count; i++) { v.fromBufferAttribute(P, i); o.localToWorld(v); if (Math.abs(plane.distanceToPoint(v)) < 0.003) near.push(v.clone()); }
+    }
+    if (!near.length) return null;
+    const usual = anchorOf(id), c = usual ? plane.projectPoint(usual, new THREE.Vector3()) : near[0];
+    return plane.projectPoint(near.reduce((best, q) => q.distanceTo(c) < best.distanceTo(c) ? q : best), new THREE.Vector3());
+  };
   // Lays the callouts out for the camera of this frame: each anchor projected onto the screen, the labels placed
   // beside them by callouts(), the lines drawn from label to anchor.
   const v3 = new THREE.Vector3();
@@ -204,15 +216,61 @@ function beden(host) {
     return b.isEmpty() ? null : { center: b.getCenter(new THREE.Vector3()).toArray(), size: b.getSize(new THREE.Vector3()).length() };
   };
 
+  // ---------- the cut faces ----------
+  // A section leaves each cut part hollow, so a closed part gets a lid where the plane passes through it. Its back
+  // faces add one to the stencil buffer and its front faces take one off, which leaves a count on the pixels inside
+  // the part, and a flat plane in the part's colour is drawn on those pixels only. Larger parts go first, so the lid
+  // of an inner part lies over the lid of the part around it. Only the lit parts get lids, or every part on a page that
+  // lights none; dimmed and ghosted context stays see-through, since a faded lid reads as a dark hole.
+  const lids = new THREE.Group(); scene.add(lids);
+  let lidParts = [];
+  // a part is closed when almost every edge of its surface joins two triangles; an open tube would streak its lid
+  const closed = o => {
+    if (o.userData.closed !== undefined) return o.userData.closed;
+    const g = o.geometry, P = g.attributes.position, I = g.index, key = new Map(), at = [], edges = new Map();
+    for (let i = 0; i < P.count; i++) { const k = `${P.getX(i).toFixed(5)},${P.getY(i).toFixed(5)},${P.getZ(i).toFixed(5)}`; if (!key.has(k)) key.set(k, key.size); at.push(key.get(k)); }
+    const n = I ? I.count : P.count, v = i => at[I ? I.getX(i) : i];
+    for (let t = 0; t + 2 < n; t += 3) for (let e = 0; e < 3; e++) { const a = v(t + e), b = v(t + (e + 1) % 3), k = a < b ? a * 4294967296 + b : b * 4294967296 + a; edges.set(k, (edges.get(k) ?? 0) + 1); }
+    let open = 0; for (const c of edges.values()) if (c === 1) open++;
+    return (o.userData.closed = open <= edges.size * 0.01);
+  };
+  function cutFaces() {
+    for (const o of lids.children) { o.geometry.dispose(); o.material.dispose(); }
+    lids.clear();
+    for (const o of lidParts) for (const s of o.userData.stencil ?? []) { o.remove(s); s.material.dispose(); }
+    lidParts = [];
+    if (!shown?.clip) return;
+    const plane = new THREE.Plane(new THREE.Vector3(...shown.clip.normal), shown.clip.constant);
+    const lit = Object.values(shown.parts).some(p => p.glow > 0), lidded = p => p && (lit ? p.glow > 0 : p.opacity >= 1);
+    const cut = [...parts.values()].filter(o => o.visible && lidded(shown.parts[o.name]) && o.userData.box.intersectsPlane(plane) && closed(o))
+      .sort((a, b) => b.userData.box.getSize(v3).length() - a.userData.box.getSize(v3).length());
+    const at = plane.coplanarPoint(new THREE.Vector3());
+    cut.forEach((o, k) => {
+      const p = shown.parts[o.name], order = 1 + 2 * k;
+      const counter = (side, op) => new THREE.Mesh(o.geometry, new THREE.MeshBasicMaterial({ side, colorWrite: false, depthWrite: false, depthTest: false, clippingPlanes: [plane],
+        stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc, stencilFail: op, stencilZFail: op, stencilZPass: op }));
+      o.userData.stencil = [counter(THREE.BackSide, THREE.IncrementWrapStencilOp), counter(THREE.FrontSide, THREE.DecrementWrapStencilOp)];
+      for (const s of o.userData.stencil) { s.renderOrder = order; o.add(s); }
+      lidParts.push(o);
+      // the lid: a flat plane in the part's colour, drawn where the count is not zero, which it then resets
+      const lid = new THREE.Mesh(new THREE.PlaneGeometry(4, 4), new THREE.MeshBasicMaterial({ color: p.color, side: THREE.DoubleSide,
+        stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc, stencilFail: THREE.ReplaceStencilOp, stencilZFail: THREE.ReplaceStencilOp, stencilZPass: THREE.ReplaceStencilOp }));
+      lid.position.copy(at); lid.lookAt(at.clone().add(plane.normal)); lid.renderOrder = order + 1;
+      lid.onAfterRender = r => r.clearStencil();
+      lids.add(lid);
+    });
+  }
+
   // Shows the current page: its view painted onto every part, its labels, and the camera jumped or tweened to it, or
   // left where the reader turned it.
   function render({ camera: move = 'tween' } = {}) {
     if (!current || !model || !parts.size) return;
     shown = view(current, { model, cameras, color, bounds, fov: camera.fov });
-    paint(shown, parts); touched = new Set();
+    paint(shown, parts); touched = new Set(); cutFaces();
+    const cutPlane = shown.clip && new THREE.Plane(new THREE.Vector3(...shown.clip.normal), shown.clip.constant);
     for (const n of notes) { n.div.remove(); n.line.remove(); n.dot.remove(); }
     notes = shown.labels.map(l => {
-      const anchor = anchorOf(l.part); if (!anchor) return null;
+      const anchor = (cutPlane && cutAnchorOf(l.part, cutPlane)) || anchorOf(l.part); if (!anchor) return null;
       const div = document.createElement('div'); div.className = 'beden-label'; div.textContent = host.L(l.text); layer.appendChild(div);
       // pointing at a label lights its part, as pointing at the part's link in the text does
       div.addEventListener('pointerenter', () => point(l.part, true)); div.addEventListener('pointerleave', () => point(l.part, false));
