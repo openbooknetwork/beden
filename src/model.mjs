@@ -59,9 +59,65 @@ export function grow(pos, idx, { length, shape = [1, 0.65, 0.45] }) {
   }
 }
 
-// Welds coincident vertices and computes smooth normals, so a part shades as one surface. `beans` grows its pieces.
-function mesh(pieces, beans = null) {
-  const key = new Map(), pos = [], idx = [];
+// Takes off the triangles with a corner inside a box, two corners in BodyParts3D millimetres, and closes each hole
+// this leaves with a smooth patch, so a closed surface stays closed. Returns the mesh without the vertices it no
+// longer uses.
+export function trim(pos, idx, [lo, hi]) {
+  const inside = i => [0, 1, 2].every(k => pos[3 * i + k] >= lo[k] && pos[3 * i + k] <= hi[k]);
+  const key = (a, b) => a < b ? `${a},${b}` : `${b},${a}`, removed = new Set(), keep = [];
+  for (let t = 0; t < idx.length; t += 3) {
+    const tri = [idx[t], idx[t + 1], idx[t + 2]];
+    if (tri.some(inside)) for (let j = 0; j < 3; j++) removed.add(key(tri[j], tri[(j + 1) % 3]));
+    else keep.push(...tri);
+  }
+  // a hole's rim: the kept edges a removed triangle shared, walked against the kept triangle so the fan faces with it
+  const next = new Map();
+  for (let t = 0; t < keep.length; t += 3) for (let j = 0; j < 3; j++) {
+    const a = keep[t + j], b = keep[t + (j + 1) % 3];
+    if (removed.has(key(a, b))) next.set(b, a);
+  }
+  const out = pos.slice(), seen = new Set();
+  for (const start of next.keys()) {
+    if (seen.has(start)) continue;
+    const loop = [];
+    for (let v = start; v !== undefined && !seen.has(v); v = next.get(v)) { seen.add(v); loop.push(v); }
+    patch(out, keep, loop, next);
+  }
+  const map = new Map(), P = [];
+  const I = keep.map(v => { if (!map.has(v)) { map.set(v, P.length / 3); P.push(out[3 * v], out[3 * v + 1], out[3 * v + 2]); } return map.get(v); });
+  return { pos: P, idx: I };
+}
+
+// Closes a hole: rings of vertices from its rim in to its middle, then each inner vertex moved to the mean of its
+// neighbours until the patch settles into a smooth membrane on the fixed rim. Appends to pos and idx.
+function patch(pos, idx, loop, next, rings = 6) {
+  const n = loop.length, c = loop.map(v => [0, 1, 2].map(k => pos[3 * v + k])).reduce((s, p) => s.map((v, k) => v + p[k] / n), [0, 0, 0]);
+  const ring = [loop];
+  for (let r = 1; r < rings; r++) ring.push(loop.map(v => {
+    for (let k = 0; k < 3; k++) pos.push(pos[3 * v + k] + (c[k] - pos[3 * v + k]) * r / rings);
+    return pos.length / 3 - 1;
+  }));
+  const mid = pos.length / 3; pos.push(...c);
+  const nb = new Map(), link = (a, b) => { for (const [p, q] of [[a, b], [b, a]]) { if (!nb.has(p)) nb.set(p, new Set()); nb.get(p).add(q); } };
+  const tri = (a, b, d) => { idx.push(a, b, d); link(a, b); link(b, d); link(d, a); };
+  for (let i = 0; i < n; i++) {
+    if (next.get(loop[i]) !== loop[(i + 1) % n]) continue; // an open rim leaves its last gap
+    const j = (i + 1) % n;
+    for (let r = 0; r + 1 < rings; r++) { tri(ring[r][i], ring[r][j], ring[r + 1][j]); tri(ring[r][i], ring[r + 1][j], ring[r + 1][i]); }
+    tri(ring[rings - 1][i], ring[rings - 1][j], mid);
+  }
+  const inner = [...ring.slice(1).flat(), mid];
+  for (let it = 0; it < 300; it++) for (const v of inner) {
+    const ns = [...nb.get(v) ?? []]; if (!ns.length) continue;
+    for (let k = 0; k < 3; k++) pos[3 * v + k] = ns.reduce((s, u) => s + pos[3 * u + k], 0) / ns.length;
+  }
+}
+
+// Welds coincident vertices and computes smooth normals, so a part shades as one surface. `beans` grows its pieces,
+// `box` trims them.
+function mesh(pieces, beans = null, box = null) {
+  const key = new Map();
+  let pos = [], idx = [];
   for (const p of pieces) {
     const remap = new Int32Array(p.pos.length / 3);
     for (let i = 0; i < remap.length; i++) {
@@ -73,6 +129,7 @@ function mesh(pieces, beans = null) {
     for (const i of p.idx) idx.push(remap[i]);
   }
   if (beans) grow(pos, idx, beans);
+  if (box) ({ pos, idx } = trim(pos, idx, box));
   const n = new Float32Array(pos.length);
   for (let t = 0; t < idx.length; t += 3) {
     const [a, b, c] = [idx[t] * 3, idx[t + 1] * 3, idx[t + 2] * 3];
@@ -198,6 +255,12 @@ export function tube(points, { sides = 12, steps = 8 } = {}) {
   return { pos: pos.flatMap(([x, y, z]) => [x * 1000, -z * 1000, y * 1000]), idx };
 }
 
+// A box of two corners in metres of the glTF frame as its lower and upper corners in BodyParts3D millimetres.
+const boxMm = corners => {
+  const [a, b] = corners.map(([x, y, z]) => [x * 1000, -z * 1000, y * 1000]);
+  return [a.map((v, k) => Math.min(v, b[k])), a.map((v, k) => Math.max(v, b[k]))];
+};
+
 // Builds model.glb beside model.yaml. objDirs hold the FJ*.obj element files, listsDir the BodyParts3D tables.
 export function buildModel(modelDir, { objDirs, listsDir, yaml }) {
   const spec = yaml.load(fs.readFileSync(path.join(modelDir, 'model.yaml'), 'utf8'));
@@ -212,7 +275,7 @@ export function buildModel(modelDir, { objDirs, listsDir, yaml }) {
     const pieces = spec.parts[id].tube ? [tube(spec.parts[id].tube)] : [...els].filter(find).map(read);
     // a part whose element files the archive lacks is left out, and the report says so
     if (!pieces.length) { report.push({ id, elements: 0, triangles: 0, missing: els.size }); continue; }
-    meshes[id] = toGltf(mesh(pieces, spec.parts[id].grow));
+    meshes[id] = toGltf(mesh(pieces, spec.parts[id].grow, spec.parts[id].trim && boxMm(spec.parts[id].trim)));
     report.push({ id, elements: pieces.length, triangles: meshes[id].idx.length / 3, missing: Math.max(els.size - pieces.length, 0) });
   }
   const file = path.join(modelDir, spec.file ?? 'model.glb'), raw = writeGlb(meshes, file);

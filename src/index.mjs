@@ -36,7 +36,8 @@ export const PageBody = z.object({
 // model.yaml: parts by their BodyParts3D concept, groups of parts, and the built file
 const Part = z.object({ concept: z.string().optional(), concepts: z.array(z.string()).optional(), elements: z.array(z.string()).optional(),
   tube: z.array(z.tuple([z.number(), z.number(), z.number(), z.number().positive()])).min(2).optional(),
-  grow: z.object({ length: z.number().positive(), shape: z.tuple([z.number().positive(), z.number().positive(), z.number().positive()]).optional() }).strict().optional(), from: Id.optional(), minus: z.array(Id).optional(), plus: z.array(Id).optional(), exclude: z.array(z.string()).optional(),
+  grow: z.object({ length: z.number().positive(), shape: z.tuple([z.number().positive(), z.number().positive(), z.number().positive()]).optional() }).strict().optional(),
+  trim: z.tuple([z.tuple([z.number(), z.number(), z.number()]), z.tuple([z.number(), z.number(), z.number()])]).optional(), from: Id.optional(), minus: z.array(Id).optional(), plus: z.array(Id).optional(), exclude: z.array(z.string()).optional(),
   layer: Id.optional(), family: Id.optional(), export: z.boolean().optional() }).strict();
 export const Model = z.object({ file: z.string().default('model.glb'), sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(), credit: z.string().optional(), source: z.string().url().optional(),
   simplify: z.number().optional(), parts: z.record(Id, Part), groups: z.record(Id, z.array(Id)).default({}), default_language: z.string().default('en') }).strict();

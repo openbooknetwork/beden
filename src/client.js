@@ -141,6 +141,7 @@ function beden(host) {
     if (!model) return;
     loader.load(model.file, gltf => {
       if (loadedId !== id) return;
+      gltf.scene.updateMatrixWorld(true);
       gltf.scene.traverse(o => {
         if (!o.isMesh) return;
         const spec = model.parts[o.name] ?? {};
@@ -154,12 +155,13 @@ function beden(host) {
     });
   }
 
-  // The vertex of a part nearest to its centre, so a label sits on the part and not in the gap of a paired one.
+  // The vertex of a part nearest to its centre, so a label sits on the part and not in the gap of a paired one. The
+  // vertices are compared in world space, since a quantized mesh holds them scaled into about [-1, 1].
   function surfacePoint(mesh, centre) {
     const pos = mesh.geometry.attributes.position, step = Math.max(1, Math.floor(pos.count / 4000)), v = new THREE.Vector3(), best = centre.clone();
     let d = Infinity;
-    for (let i = 0; i < pos.count; i += step) { v.fromBufferAttribute(pos, i); const k = v.distanceToSquared(centre); if (k < d) { d = k; best.copy(v); } }
-    return mesh.localToWorld(best);
+    for (let i = 0; i < pos.count; i += step) { mesh.localToWorld(v.fromBufferAttribute(pos, i)); const k = v.distanceToSquared(centre); if (k < d) { d = k; best.copy(v); } }
+    return best;
   }
 
   const expand = ids => (ids ?? []).flatMap(id => model?.groups?.[id] ?? [id]);

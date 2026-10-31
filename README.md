@@ -59,6 +59,16 @@ thoracic-duct:
     - [-0.004, 1.135, 0.088, 0.0025]  # T10
 ```
 
+### Trimmed parts
+
+`trim` takes off a part's triangles with a corner inside a box, given as two corners in metres of the model's frame,
+and closes the hole with a smooth patch. BodyParts3D's skin holds the genitals, which a story about another system
+leaves out:
+
+```yaml
+skin: { concept: FMA7163, layer: skin, family: skin, trim: [[-0.04, 0.683, 0.112], [0.04, 0.8, 0.26]] }
+```
+
 ## A page
 
 ```yaml
