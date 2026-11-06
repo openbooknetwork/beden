@@ -9,7 +9,7 @@
     "@gltf-transform/core": "^4.5.1",
     "@gltf-transform/extensions": "^4.5.1",
     "@gltf-transform/functions": "^4.5.1",
-    "@openbooknetwork/kitap": "^0.3.0",
+    "@openbooknetwork/kitap": "^0.6.2",
     "js-yaml": "^4.1.0",
     "meshoptimizer": "^1.3.0",
     "three": "0.186.1"
